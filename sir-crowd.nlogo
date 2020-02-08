@@ -3,6 +3,7 @@ extensions [csv]
 globals [
   min_lon max_lon min_lat max_lat
   mortality
+  totalCoverage
 ]
 
 breed [provinces province]
@@ -21,8 +22,9 @@ cities-own [
 ]
 
 persons-own [
-  status ; 0 - susceptible, 1 - latency 2 - onset, -1 - resist
+  status ; 0 - susceptible, 1 - latency 2 - onset, -1 - resist -2 dead
   infected-time  ; ticks
+  contacts       ; who this person has daily interaction
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -32,27 +34,32 @@ to setup
   clear-all
   reset-ticks
   ask patches [set pcolor white]
-  init-cities
-  init-travel-route
+  ask patch 92 98 [set plabel (word "Day " ticks) set plabel-color black]
+  init-one-community numPerson
+  ;init-cities
   init-outbreak
-  ask persons-on patch 0 0[
-    set-status 1
-  ]
+  set totalCoverage map [? -> [status] of ?] sort persons
 end
 
 
 to init-outbreak
-  ask cities with [name = "武汉市"][
-    ask one-of persons-here [
-      set status 1
+  ask one-of persons [set-status 1]
+  if false [
+    ask cities with [name = "武汉市"][
+      ask one-of persons-here [
+        set-status 1
+      ]
     ]
   ]
 end
 
 to go
-  incity-spread
-  intercity-travel
-  update-city-colors
+  if not any? persons with [status > 0][stop]
+  ask patch 92 98 [set plabel (word "Day " ticks)]
+  community-spread
+;  incity-spread
+;  intercity-travel
+;  update-city-colors
   tick
 end
 
@@ -66,27 +73,51 @@ to-report infection-rate
   report count persons-here with [status > 0] / population
 end
 
-to incity-spread
-  ask persons with [status > 0][
-    ask up-to-n-of R0 (other persons-here) with [status = 0][
-      if random-float 1 < spread-rate [
+
+to community-spread
+  ask persons with [status > ifelse-value (latencySpread?) [0] [1] ][
+    let todaysContacts nobody
+    ; base on distance
+    set todaysContacts up-to-n-of dailyContacts (other persons in-radius dailyActivityDistance)
+    ; base on network
+    if any? link-neighbors [
+      set todaysContacts (turtle-set todaysContacts link-neighbors)
+    ]
+
+    ask todaysContacts with [status = 0][
+      if random-float 1 * (ifelse-value ([status] of myself = 1)[0.1][1]) < spreadRate [
         set-status 1
       ]
     ]
-    if (infected-days >= latency-period)[set status 2]
-
-    ; recovery
-    if (infected-days >= (latency-period + onset-period)) [
-      ifelse (random-float 1 <= death-rate)
+    ; end of infection (latency + onset) period
+    if (infected-days >= (2 + random latencyPeriod + 2 + random onsetPeriod)) [
+      ifelse (random-float 1 <= deathRate)
       [
         set mortality mortality + 1
-        die
+        set-status -2
       ]
       [
-        set-status ifelse-value (random-float 1 <= get-resist-ratio)[-1][0]
+        set-status ifelse-value (random-float 1 <= getResistRatio)[-1][0]
       ]
     ]
   ]
+
+  ask persons with [status = 1][
+    if (infected-days >= 2 + random latencyPeriod)[set-status 2]
+  ]
+
+  update-total-coverage
+
+end
+
+to update-total-coverage
+  set totalCoverage (map [[p t] -> ifelse-value ([status] of p > 0)[1] [t] ] sort persons totalCoverage)
+end
+
+
+to incity-spread
+
+
 end
 
 
@@ -107,16 +138,64 @@ end
 to set-status [x]
   set status x
   set-color-based-on-status
-  set infected-time ticks
+  if x = 1 [set infected-time ticks]
 end
 
 to set-color-based-on-status
-  set color ifelse-value (status = 0)[green][
-    ifelse-value (status = 1) [red][gray]
+  set color ifelse-value (status = 0)
+  [ green ]
+  [
+    ifelse-value (status = 1)
+    [ orange ]
+    [ ifelse-value (status = 2)
+      [ red ]
+      [ ifelse-value (status = -1)
+        [ gray ]
+        [ black ]
+      ]
+    ]
   ]
 end
 
 
+
+to init-one-community [num]
+  create-persons num [
+    setxy 50 50
+    set shape "circle"
+    set size 0.6
+    set heading random 360
+    fd random-float 40
+    set-status 0
+  ]
+
+  ask one-of persons with [abs (xcor - 50) < 1 and abs (ycor - 50) < 1 ][
+    create-link-with one-of other persons
+  ]
+  while [mean [count my-links] of persons < networkMeanDegree][
+    if networkAttachmentMethod = "scale free" [
+      ask one-of persons [
+        create-link-with [one-of both-ends] of one-of links with [not member? myself both-ends]
+      ]
+    ]
+    if networkAttachmentMethod = "small world" [
+      ask n-of round (count persons * networkMeanDegree) persons [
+        create-link-with one-of other persons in-radius 10
+      ]
+      ask n-of (0.05 * count links) links [
+        ask one-of both-ends [
+          create-link-with one-of other persons with [not member? self [link-neighbors] of myself]
+        ]
+        die
+      ]
+    ]
+    if networkAttachmentMethod = "random" [
+      ask one-of persons [
+        create-link-with one-of other persons with [not member? self [link-neighbors] of myself]
+      ]
+    ]
+  ]
+end
 
 to init-cities
   let data but-first csv:from-file "geo-population.csv"
@@ -217,11 +296,11 @@ end
 GRAPHICS-WINDOW
 242
 11
-831
-601
+758
+528
 -1
 -1
-5.7525
+5.03
 1
 10
 1
@@ -235,8 +314,8 @@ GRAPHICS-WINDOW
 100
 0
 100
-0
-0
+1
+1
 1
 ticks
 30.0
@@ -276,11 +355,134 @@ NIL
 1
 
 PLOT
-17
-169
-217
-319
+243
+528
+758
+670
 population
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+true
+"" ""
+PENS
+"susceptible" 1.0 0 -13840069 true "" "plot count persons with [status = 0]"
+"latency" 1.0 0 -955883 true "" "plot count persons with [status = 1]"
+"onset" 1.0 0 -2674135 true "" "plot count persons with [status = 2]"
+"resist" 1.0 0 -7500403 true "" "plot count persons with [status = -1]"
+"mortality" 1.0 0 -16777216 true "" "plot mortality"
+
+SLIDER
+22
+259
+194
+292
+getResistRatio
+getResistRatio
+0
+1
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+22
+334
+196
+367
+onsetPeriod
+onsetPeriod
+0
+100
+10.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+22
+222
+194
+255
+spreadRate
+spreadRate
+0
+1
+0.15
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+22
+299
+196
+332
+latencyPeriod
+latencyPeriod
+0
+100
+5.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+23
+369
+196
+402
+deathRate
+deathRate
+0
+1
+0.01
+0.01
+1
+NIL
+HORIZONTAL
+
+INPUTBOX
+23
+775
+172
+835
+numPersonPerTurtle
+10000.0
+1
+0
+Number
+
+SLIDER
+24
+495
+199
+528
+dailyContacts
+dailyContacts
+0
+10
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+1056
+27
+1256
+177
+Radial distribution
 NIL
 NIL
 0.0
@@ -291,48 +493,33 @@ true
 false
 "" ""
 PENS
-"latency" 1.0 0 -817084 true "" "plot count persons with [status = 1]"
-"onset" 1.0 0 -2674135 true "" "plot count persons with [status = 2]"
-"resist" 1.0 0 -7500403 true "" "plot count persons with [status = -1]"
-"mortality" 1.0 0 -16777216 true "" "plot mortality"
+"default" 1.0 0 -16777216 true "" "clear-plot\nforeach range 100 [ x -> \n  plot count turtles-on patches with [pxcor = x]\n]"
 
-SLIDER
-25
-418
-197
-451
-get-resist-ratio
-get-resist-ratio
-0
-1
-0.5
-0.01
-1
+PLOT
+1058
+188
+1258
+338
+degree distribution
 NIL
-HORIZONTAL
-
-SLIDER
-24
-527
-198
-560
-onset-period
-onset-period
-0
-100
+NIL
+0.0
 10.0
-1
-1
-NIL
-HORIZONTAL
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "histogram [ count my-links] of turtles"
 
 SLIDER
-25
-381
-197
-414
-spread-rate
-spread-rate
+23
+582
+226
+615
+networkMeanDegree
+networkMeanDegree
 0
 1
 0.1
@@ -343,59 +530,131 @@ HORIZONTAL
 
 SLIDER
 24
-491
-198
-524
-latency-period
-latency-period
-0
-100
-14.0
-1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-25
-344
-197
-377
-R0
-R0
+460
+200
+493
+dailyActivityDistance
+dailyActivityDistance
 0
 10
-2.04
-0.01
+3.0
+1
 1
 NIL
 HORIZONTAL
 
-SLIDER
+SWITCH
+21
+180
+177
+213
+latencySpread?
+latencySpread?
+1
+1
+-1000
+
+CHOOSER
+23
+619
+227
+664
+networkAttachmentMethod
+networkAttachmentMethod
+"scale free" "small world" "random"
+0
+
+TEXTBOX
+28
+440
+178
+458
+居住地局部传播假设
+11
+0.0
+1
+
+TEXTBOX
+27
+157
+177
+175
+病毒传播能力假设
+11
+0.0
+1
+
+TEXTBOX
 25
 562
-198
-595
-death-rate
-death-rate
-0
+175
+580
+网络结构假设
+11
+0.0
 1
-0.1
-0.01
-1
+
+PLOT
+1059
+371
+1259
+521
+totalCoverage
 NIL
-HORIZONTAL
+NIL
+0.0
+10.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "if is-list? totalCoverage [ plot (sum totalCoverage) / numPerson ]"
 
 INPUTBOX
-33
-638
-182
-698
-numPersonPerTurtle
+866
+645
+1015
+705
+numPerson
 10000.0
 1
 0
 Number
+
+SWITCH
+807
+26
+973
+59
+quarantineOnset?
+quarantineOnset?
+0
+1
+-1000
+
+SWITCH
+807
+63
+1000
+96
+quanrantineContacts?
+quanrantineContacts?
+1
+1
+-1000
+
+SWITCH
+807
+102
+945
+135
+stayAtHome?
+stayAtHome?
+1
+1
+-1000
 
 @#$#@#$#@
 ## 0202
