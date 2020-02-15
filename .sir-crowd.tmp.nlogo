@@ -6,8 +6,8 @@ globals [
   totalCoverage
   numEmptyBeds
   numEmptyRooms
-  stayAtHome?  ; 强制居家
-  quarantine?  ; 隔离病患
+  stayAtHome?
+  quarantine?
 ]
 
 breed [ provinces province ]
@@ -35,7 +35,7 @@ persons-own [
 
   suspected?     ; 疑似
   confirmed?     ; 确诊
-  quarantined?   ; 隔离
+  quarantined?   ; d隔离
   hospitalized?  ; 收治
   quarantineBeginTime  ; 隔离开始时间
 ]
